@@ -19,10 +19,12 @@ def wire_events(
     router: MessageRouter,
 ) -> None:
     """
-    Wire bus event handlers.
+    Forward incoming Telegram events to Chatwoot. Each adapter listens on its
+    own per-account bus event so multi-account setups don't collide.
 
-    For each Telegram adapter we listen on its per-account incoming event
-    (`telegram.incoming.<inbox_id>`) and forward the message to Chatwoot.
+    A contact in Chatwoot is keyed by its `identifier`:
+      - "telegram:<user_id>"        for a direct DM partner
+      - "telegram_group:<chat_id>"  for a group / supergroup
     """
     cw_client = ChatwootClient(
         api_access_token=config.chatwoot.api_access_token,
@@ -34,26 +36,41 @@ def wire_events(
     def make_handler(inbox_id: int):
         async def _handler(payload: Dict[str, Any]) -> None:
             try:
+                kind = payload.get("kind", "dm")
                 text = (payload.get("text") or "").strip()
-                from_id = str(payload.get("from_id") or "")
-                username = payload.get("username")
-                name = payload.get("name") or username or from_id
 
-                custom_attributes: Dict[str, Any] = {}
-                if from_id:
-                    custom_attributes["telegram_user_id"] = from_id
-                if username:
-                    custom_attributes["telegram_username"] = username
-
-                search_key = username or from_id
+                if kind == "group":
+                    chat_id = payload.get("chat_id") or ""
+                    chat_title = payload.get("chat_title") or f"Group {chat_id}"
+                    sender_name = payload.get("sender_name") or "?"
+                    identifier = f"telegram_group:{chat_id}"
+                    contact_name = chat_title
+                    custom_attrs: Dict[str, Any] = {
+                        "telegram_chat_id": chat_id,
+                        "telegram_chat_type": "group",
+                    }
+                    # prefix the per-message body with the actual sender so
+                    # one Chatwoot conversation can host many participants
+                    if text:
+                        text = f"[{sender_name}] {text}"
+                    else:
+                        text = f"[{sender_name}]"
+                else:  # dm
+                    from_id = str(payload.get("from_id") or "")
+                    username = payload.get("username")
+                    identifier = f"telegram:{from_id}"
+                    contact_name = (
+                        payload.get("name") or username or from_id
+                    )
+                    custom_attrs = {"telegram_user_id": from_id}
+                    if username:
+                        custom_attrs["telegram_username"] = username
 
                 contact = await cw.ensure_contact(
                     inbox_id=inbox_id,
-                    search_key=search_key,
-                    name=name,
-                    phone=None,
-                    email=None,
-                    custom_attributes=custom_attributes,
+                    identifier=identifier,
+                    name=contact_name,
+                    custom_attributes=custom_attrs,
                 )
 
                 conv_id = await cw.ensure_conversation(
@@ -68,9 +85,11 @@ def wire_events(
                     direction="incoming",
                 )
                 logger.info(
-                    "[events] telegram -> chatwoot OK inbox=%s conv=%s",
+                    "[events] telegram %s -> chatwoot OK inbox=%s conv=%s id=%s",
+                    kind,
                     inbox_id,
                     conv_id,
+                    identifier,
                 )
             except Exception as e:
                 logger.exception(

@@ -16,80 +16,56 @@ class ChatwootService:
         self,
         *,
         inbox_id: int,
-        search_key: str,
+        identifier: str,
         name: Optional[str],
-        phone: Optional[str],
-        email: Optional[str],
-        custom_attributes: Dict[str, Any],
+        custom_attributes: Optional[Dict[str, Any]] = None,
         additional_attributes: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
-        Upsert contact and return {'id', 'source_id'}.
-        Strategy:
-          1) If custom_attributes contains telegram_user_id, look up via /contacts/filter
-             so we match on the platform id even when the contact has no name yet.
-          2) Otherwise fall back to /contacts/search with the search_key.
-          3) If found -> update attributes (best effort).
-          4) If not found -> create with inbox_id + attributes.
+        Upsert a contact keyed by Chatwoot's built-in `identifier` column.
+
+        We use identifier as the single canonical key (e.g. "telegram:12345"
+        for a user, "telegram_group:-100abc" for a group). identifier is a
+        real indexed column on the contacts table, so lookup is reliable
+        across versions — unlike /contacts/filter on custom_attributes which
+        depends on schema definitions and has been buggy.
+
+        Returns {'id': int, 'source_id': str}.
         """
         contacts = []
 
-        # 1) most-stable: telegram_user_id (numeric, immutable)
-        if "telegram_user_id" in (custom_attributes or {}):
-            try:
-                res = await self._client.filter_contacts(
-                    {"telegram_user_id": custom_attributes["telegram_user_id"]}
-                )
-                contacts = (res or {}).get("payload") or []
-            except Exception as e:
-                logger.warning("[chatwoot] filter_contacts(user_id) failed: %s", e)
-
-        # 2) fallback: telegram_username (covers contacts the operator created
-        #    manually in Chatwoot UI before the bridge ever saw a message from
-        #    that user — they have the @handle but no user_id yet)
-        if not contacts and "telegram_username" in (custom_attributes or {}):
-            try:
-                uname = (custom_attributes["telegram_username"] or "").lstrip("@")
-                res = await self._client.filter_contacts(
-                    {"telegram_username": uname}
-                )
-                contacts = (res or {}).get("payload") or []
-            except Exception as e:
-                logger.warning("[chatwoot] filter_contacts(username) failed: %s", e)
-
-        # 3) last resort: free-text search
-        if not contacts:
-            try:
-                res = await self._client.search_contacts(q=search_key)
-                contacts = (res or {}).get("payload") or []
-            except Exception as e:
-                logger.warning("[chatwoot] search_contacts failed: %s", e)
+        # search_contacts hits identifier among other fields; we filter the
+        # results to exact identifier match so we don't accidentally take a
+        # partial name hit.
+        try:
+            res = await self._client.search_contacts(q=identifier)
+            all_contacts = (res or {}).get("payload") or []
+            contacts = [c for c in all_contacts if (c.get("identifier") or "") == identifier]
+        except Exception as e:
+            logger.warning("[chatwoot] search by identifier failed: %s", e)
 
         if contacts:
             contact = contacts[0]
             contact_id = int(contact.get("id"))
-            if custom_attributes or additional_attributes is not None:
-                try:
-                    await self._client.update_contact(
-                        contact_id=contact_id,
-                        custom_attributes=custom_attributes,
-                        additional_attributes=additional_attributes,
-                    )
-                except Exception as e:
-                    logger.warning("[chatwoot] update_contact skipped: %s", e)
+            try:
+                await self._client.update_contact(
+                    contact_id=contact_id,
+                    identifier=identifier,
+                    custom_attributes=custom_attributes,
+                    additional_attributes=additional_attributes,
+                )
+            except Exception as e:
+                logger.warning("[chatwoot] update_contact skipped: %s", e)
             if name and not (contact.get("name") or "").strip():
                 try:
-                    await self._client.update_contact(
-                        contact_id=contact_id, name=name
-                    )
+                    await self._client.update_contact(contact_id=contact_id, name=name)
                 except Exception as e:
                     logger.warning("[chatwoot] update name skipped: %s", e)
         else:
             created = await self._client.create_contact(
                 inbox_id=inbox_id,
-                name=name or search_key,
-                phone_number=phone,
-                email=email,
+                name=name or identifier,
+                identifier=identifier,
                 custom_attributes=custom_attributes or {},
                 additional_attributes=additional_attributes,
             )
@@ -98,12 +74,12 @@ class ChatwootService:
             if not contact and "id" in (created or {}):
                 contact = created
 
-        source_id = self._extract_source_id_for_inbox(contact, inbox_id) or search_key
+        source_id = self._extract_source_id_for_inbox(contact, inbox_id) or identifier
         logger.info(
-            "[chatwoot] ensure_contact ok id=%s inbox=%s source_id=%r",
+            "[chatwoot] ensure_contact id=%s inbox=%s identifier=%s",
             contact.get("id"),
             inbox_id,
-            source_id,
+            identifier,
         )
         return {"id": int(contact.get("id")), "source_id": source_id}
 

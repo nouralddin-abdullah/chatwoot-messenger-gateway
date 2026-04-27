@@ -31,14 +31,21 @@ class MessageRouter:
 
     def _derive_recipient_id(self, payload: dict) -> str | None:
         """
-        Build a Telethon-compatible recipient id from the Chatwoot sender:
-          1) sender.custom_attributes.telegram_username      -> '@username'
-          2) sender.additional_attributes.social_telegram_user_name (Chatwoot TG bot) -> '@username'
-          3) sender.phone_number                             -> '+7999...'
-          4) sender.custom_attributes.telegram_user_id       -> 'id:<int>'
-          5) sender.additional_attributes.social_telegram_user_id (Chatwoot TG bot) -> 'id:<int>'
+        Build a Telethon-compatible recipient id from the Chatwoot sender.
+        Priority:
+          1) identifier == 'telegram_group:<chat_id>' -> route to that group
+          2) identifier == 'telegram:<user_id>'       -> route to that user
+          3) custom_attributes.telegram_username      -> '@username'
+          4) additional_attributes.social_telegram_user_name (Chatwoot TG bot)
+          5) phone_number
+          6) custom_attributes.telegram_user_id       -> 'id:<int>'
+          7) additional_attributes.social_telegram_user_id
         """
         sender = _dig(payload, "conversation", "meta", "sender", default={}) or {}
+
+        identifier = (sender.get("identifier") or "").strip()
+        if identifier.startswith(("telegram:", "telegram_group:")):
+            return identifier
 
         username = (sender.get("custom_attributes", {}) or {}).get("telegram_username") or ""
         username = username.strip()
