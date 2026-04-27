@@ -34,15 +34,35 @@ class ChatwootService:
         """
         contacts = []
 
-        # search_contacts hits identifier among other fields; we filter the
-        # results to exact identifier match so we don't accidentally take a
-        # partial name hit.
+        # 1) Primary lookup: exact match on Chatwoot's `identifier` column.
         try:
             res = await self._client.search_contacts(q=identifier)
             all_contacts = (res or {}).get("payload") or []
             contacts = [c for c in all_contacts if (c.get("identifier") or "") == identifier]
         except Exception as e:
             logger.warning("[chatwoot] search by identifier failed: %s", e)
+
+        # 2) Fallback: adopt a manual contact created via UI before the bridge
+        #    saw this user. Such contacts have telegram_username set in custom
+        #    attributes but no identifier yet. We adopt the first one we find
+        #    and stamp identifier on it so future lookups go through the fast
+        #    path above.
+        if not contacts:
+            username = (custom_attributes or {}).get("telegram_username")
+            if username:
+                clean = str(username).lstrip("@")
+                try:
+                    res = await self._client.search_contacts(q=clean)
+                    all_contacts = (res or {}).get("payload") or []
+                    contacts = [
+                        c for c in all_contacts
+                        if not (c.get("identifier") or "")
+                        and (c.get("custom_attributes") or {}).get(
+                            "telegram_username", ""
+                        ).lstrip("@").lower() == clean.lower()
+                    ]
+                except Exception as e:
+                    logger.warning("[chatwoot] adopt-by-username search failed: %s", e)
 
         if contacts:
             contact = contacts[0]
