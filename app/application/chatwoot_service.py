@@ -34,18 +34,30 @@ class ChatwootService:
         """
         contacts = []
 
-        attr_lookup_keys = [
-            k for k in ("telegram_user_id",) if k in (custom_attributes or {})
-        ]
-        if attr_lookup_keys:
+        # 1) most-stable: telegram_user_id (numeric, immutable)
+        if "telegram_user_id" in (custom_attributes or {}):
             try:
                 res = await self._client.filter_contacts(
-                    {k: custom_attributes[k] for k in attr_lookup_keys}
+                    {"telegram_user_id": custom_attributes["telegram_user_id"]}
                 )
                 contacts = (res or {}).get("payload") or []
             except Exception as e:
-                logger.warning("[chatwoot] filter_contacts failed: %s", e)
+                logger.warning("[chatwoot] filter_contacts(user_id) failed: %s", e)
 
+        # 2) fallback: telegram_username (covers contacts the operator created
+        #    manually in Chatwoot UI before the bridge ever saw a message from
+        #    that user — they have the @handle but no user_id yet)
+        if not contacts and "telegram_username" in (custom_attributes or {}):
+            try:
+                uname = (custom_attributes["telegram_username"] or "").lstrip("@")
+                res = await self._client.filter_contacts(
+                    {"telegram_username": uname}
+                )
+                contacts = (res or {}).get("payload") or []
+            except Exception as e:
+                logger.warning("[chatwoot] filter_contacts(username) failed: %s", e)
+
+        # 3) last resort: free-text search
         if not contacts:
             try:
                 res = await self._client.search_contacts(q=search_key)
@@ -118,18 +130,16 @@ class ChatwootService:
         res = await self._client.list_conversations(contact_id)
         conversations = (res or {}).get("payload") or []
 
+        # Reuse any active conversation belonging to this contact + inbox.
+        # A contact has at most one contact_inbox per inbox, so all conversations
+        # for that pair share the same source_id; matching on inbox_id is enough.
         for conv in conversations:
             if conv.get("status") not in ("open", "pending"):
                 continue
-            nested_source_id = (
-                (conv.get("last_non_activity_message") or {})
-                .get("conversation", {})
-                .get("contact_inbox", {})
-                .get("source_id")
-            )
-            if nested_source_id == source_id:
-                logger.info("[chatwoot] reuse conversation id=%s", conv.get("id"))
-                return int(conv["id"])
+            if int(conv.get("inbox_id") or 0) != int(inbox_id):
+                continue
+            logger.info("[chatwoot] reuse conversation id=%s", conv.get("id"))
+            return int(conv["id"])
 
         extra: Dict[str, Any] = {}
         if custom_attributes:
