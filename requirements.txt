@@ -1,0 +1,10 @@
+# Runtime dependencies for the Chatwoot ↔ Telegram bridge.
+fastapi[standard-no-fastapi-cloud-cli]>=0.116.1,<0.117
+uvicorn[standard]>=0.30.0,<0.40
+httpx>=0.28.1,<0.29
+pyee>=13.0.0,<14
+python-dotenv>=1.1.1,<2
+telethon>=1.40.0,<2
+cryptg>=0.5.1,<0.6
+pillow>=11.3.0,<12
+pydantic>=2.9.0,<3

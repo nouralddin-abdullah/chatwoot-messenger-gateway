@@ -1,114 +1,193 @@
+# Chatwoot ↔ Telegram Bridge
 
-# Chatwoot Integrations: WhatsApp, Telegram, VK
+Bridge **personal Telegram accounts** (non-bot) to Chatwoot. Multi-account from
+day one — one Telethon session per Chatwoot inbox.
 
-This project demonstrates how to integrate [Chatwoot](https://www.chatwoot.com/) with messengers (WhatsApp via Wasender, Telegram via Telethon, VK via Callback API) using Python and FastAPI.
+Forked from [feel90d/chatwoot-messenger-gateway][upstream], stripped down to
+just the Telegram path, refactored for multi-account, and packaged for Docker.
 
-## Features
+[upstream]: https://github.com/feel90d/chatwoot-messenger-gateway
 
-- Send and receive messages between Chatwoot and:
-  - WhatsApp (through Wasender)
-  - Telegram (through Telethon, non-bot account)
-  - VK (VK group messages)
-- Automatic contact sync and enrichment (custom attributes)
-- Architecture ready for AI automation and future extensions
+## What this is
 
-## Quick Start
+Chatwoot's native Telegram integration only supports **bots** (BotFather token).
+Bots can't read your DMs, can't see your groups, and can only message users who
+messaged the bot first. Useless for using Chatwoot as a CRM over your real
+Telegram identity.
 
-### 1. Prerequisites
+This service plugs that gap. It logs into Telegram **as you** via Telethon
+(MTProto user-API), watches your incoming messages, and forwards them to a
+Chatwoot **API channel** inbox. When an agent replies in Chatwoot, the reply
+goes back out through your Telegram account.
 
-- Python 3.11 or newer
-- [Poetry](https://python-poetry.org/) for dependency management
-- A running instance of Chatwoot
-- Wasender account (for WhatsApp integration)
-- Telegram account (for Telethon, not a bot)
-- VK group and API credentials
+## How it fits together
 
-### 2. Installation
-
-Clone the repository and install dependencies:
-
-```bash
-git clone git@github.com:feel90d/chatwoot-messenger-gateway.git
-cd chatwoot-messenger-gateway
-poetry install
+```
+                       ┌─────────────────────────────┐
+                       │  Telegram servers (MTProto) │
+                       └──────────────┬──────────────┘
+                                      │  one TCP/TLS session per account
+                       ┌──────────────┴──────────────┐
+                       │  this service               │
+                       │   - Telethon clients (N)    │
+                       │   - FastAPI webhook server  │
+                       └──────────────┬──────────────┘
+                  Telegram→Chatwoot   │   Chatwoot→Telegram
+              (REST: contacts, msgs)  │   (webhook from Chatwoot per inbox)
+                       ┌──────────────┴──────────────┐
+                       │  Chatwoot                   │
+                       └─────────────────────────────┘
 ```
 
-### 3. Configuration
+Per Telegram account, one Channel::Api inbox in Chatwoot. Outbound replies
+arrive at `/chatwoot/webhook/<webhook_id>`; the bridge maps `webhook_id →
+inbox_id → adapter` and Telethon sends as the right account.
 
-Copy `.env_template` to `.env` and fill in your credentials:
+## Risks worth knowing
+
+Telegram allows user-API access but flags accounts that look like bots.
+Reading via the bridge and replying manually through Chatwoot is fine. The
+following will get an account banned:
+
+- auto-replies, mass DMs, scheduled broadcasts
+- replying to people who never wrote to you (cold outreach)
+- replies that arrive faster than a human could realistically type
+
+Use it like a CRM, not like a marketing tool.
+
+## Quick start (Docker, recommended)
+
+The repo ships a `Dockerfile`, a `docker-compose.example.yml`, and an
+`auth.py` helper. Recommended layout: clone next to your existing
+Chatwoot/Evolution stack.
+
+### 1. Clone and configure
 
 ```bash
+git clone https://github.com/nouralddin-abdullah/chatwoot-messenger-gateway.git
+cd chatwoot-messenger-gateway
 cp .env_template .env
 ```
 
-Edit `.env` and set the following sections:
+Fill in `.env`:
 
-- **Chatwoot**:
-  - `CHATWOOT_API_ACCESS_TOKEN`
-  - `CHATWOOT_ACCOUNT_ID`
-  - `CHATWOOT_BASE_URL`
-  - `CHATWOOT_WEBHOOK_ID_WHATSAPP`
-  - `CHATWOOT_WEBHOOK_ID_TELEGRAM`
-  - `CHATWOOT_WEBHOOK_ID_VK`
+- **Chatwoot section** — copy your admin API token (Profile → API Access
+  Token), account id (`1` for single-tenant), and `CHATWOOT_BASE_URL`
+  (e.g. `https://chat.example.com`).
+- **TG_API_ID / TG_API_HASH** — create a Telegram dev app at
+  [my.telegram.org → API development tools](https://my.telegram.org). One app
+  is enough for many sessions.
+- **One block per account**: `TG_1_SESSION_NAME`, `TG_1_INBOX_ID`,
+  `TG_1_WEBHOOK_ID`. Generate webhook IDs with:
+  ```bash
+  python -c "import secrets; print(secrets.token_hex(32))"
+  ```
+  Repeat for `TG_2_*`, `TG_3_*`, ... as you add more accounts.
 
-- **Wasender**:
-  - `WASENDER_API_KEY`
-  - `WASENDER_WEBHOOK_SECRET`
-  - `WASENDER_WEBHOOK_ID`
-  - `WASENDER_INBOX_ID`
+### 2. Create the Chatwoot inboxes
 
-- **Telegram**:
-  - `TG_API_ID`
-  - `TG_API_HASH`
-  - `TG_SESSION_NAME` (arbitrary name for your Telethon session)
-  - `TG_INBOX_ID`
+For each Telegram account, create a Chatwoot inbox of type **API** (not
+Telegram, not Email). Note the inbox id from the URL (`.../inboxes/8` ⇒
+`INBOX_ID=8`) and put it in `.env`.
 
-- **VK**:
-  - `VK_ACCESS_TOKEN`
-  - `VK_GROUP_ID`
-  - `VK_SECRET`
-  - `VK_CONFIRMATION`
-  - `VK_API_VERSION`
-  - `VK_CALLBACK_ID`
-  - `VK_INBOX_ID`
-
-> **Note:** All sensitive values must be kept secret. Never commit `.env` to your public repository.
-
-### 4. Running the App
-
-```bash
-python ./app/main.py
+In each inbox's **Configuration → Webhook URL**, paste:
+```
+https://<your-bridge-host>/chatwoot/webhook/<the-TG_N_WEBHOOK_ID-for-this-inbox>
 ```
 
-The application exposes a FastAPI server with webhooks for all configured channels. You can use [ngrok](https://ngrok.com/) or another tunnel to expose your local server for webhooks.
+If you only run the bridge on the internal Docker network, set Chatwoot's
+inbox webhook URL to `http://telegram-bridge:8000/chatwoot/webhook/<id>` —
+Chatwoot's Sidekiq workers can reach internal hostnames.
 
-Example:
+### 3. Add the service to your compose stack
+
+Copy the snippet from `docker-compose.example.yml` into your existing
+`docker-compose.yml` (alongside chatwoot-rails, chatwoot-sidekiq, etc.) and add
+the named volume.
+
+### 4. Authenticate each Telegram account (one-time)
+
+This is interactive — you'll enter your phone number, the SMS code Telegram
+sends, and your 2FA password if set:
 
 ```bash
-ngrok http 8000
+docker compose run --rm telegram-bridge python auth.py <session_name>
 ```
 
-Update your webhook URLs in Chatwoot, Wasender, and VK to point to your public ngrok address.
+Run once per account, using the `TG_N_SESSION_NAME` value as
+`<session_name>`. The session file is written to the
+`telegram_sessions` named volume and persists across container restarts.
 
-### 5. How it Works
+### 5. Start the service
 
-- **Outgoing:** Messages from Chatwoot are sent to WhatsApp, Telegram, or VK via their respective adapters.
-- **Incoming:** Replies from users in messengers are delivered to Chatwoot with all attributes preserved.
-- Contacts are matched or created based on messenger IDs (e.g., `telegram_user_id`, `telegram_username`).
+```bash
+docker compose up -d telegram-bridge
+docker compose logs -f telegram-bridge
+```
 
-### 6. Development
+You should see one `[telegram:<session>] logged in as @username (inbox=N)`
+line per configured account, then `Application startup complete`.
 
-- Format code: `poetry run black .`
-- Lint code: `poetry run lint`
+### 6. Test
 
-## Authors
+Send a Telegram DM to one of the bridged accounts from another phone. The
+conversation should appear in the matching Chatwoot inbox within ~1s. Reply
+from Chatwoot and watch the message arrive on the original sender's phone.
 
-* [feel90d](mailto:feel90d@gmail.com), Telegram: [@feel90d](https://t.me/feel90d)
-* [lukyan0v\_a](mailto:forjob34@gmail.com), Telegram: [@lukyan0v\_a](https://t.me/lukyan0v_a)
+## Health endpoint
 
-If you have any questions, want to discuss integrations, or are interested in a similar solution for your business — feel free to message us on Telegram or by email.
-This article was written to share practical experience and help the community — we’re always happy to connect and answer your questions!
+```bash
+curl http://localhost:8000/health
+```
+
+Returns the configured Chatwoot account, base URL, and the list of Telegram
+accounts (session names + bound inbox ids). No secrets exposed.
+
+## Adding another account later
+
+1. Append a new `TG_N_*` block to `.env`
+2. Create a Chatwoot API inbox for it; put the `inbox_id` and a fresh
+   `webhook_id` in `.env`
+3. `docker compose run --rm telegram-bridge python auth.py <new-session-name>`
+4. `docker compose up -d --force-recreate telegram-bridge`
+
+## Troubleshooting
+
+**Service crashes with "session is NOT authorized"** — you started before
+running `auth.py` for that session. Run the auth helper, then restart.
+
+**Outbound message logged but never delivered** — Telethon couldn't resolve
+the recipient. Check the contact in Chatwoot has either
+`telegram_username`, `telegram_user_id`, or a `phone_number` set. New contacts
+created by the bridge get these populated automatically; manually-added
+contacts may not.
+
+**Account got "limited" by Telegram** — slow down. Spam patterns from a
+user-API session get the account flagged. Wait it out, then use the account
+manually for a few days.
+
+**`FloodWaitError`** — Telegram's rate limit kicked in. The error includes a
+seconds count; don't retry until it elapses.
+
+## Architecture notes
+
+- **One adapter per Telegram account**, keyed by Chatwoot `inbox_id`. The
+  `MessageRouter` looks up the adapter by inbox to dispatch outbound.
+- **Bus event names are per-account** (`telegram.incoming.<inbox_id>`) so
+  multiple Telethon clients don't share an event channel.
+- **Sessions are persisted** to `/app/sessions` (mount a named volume in
+  production). Losing them forces re-auth.
+- **Text only** for now. Media support is scaffolded
+  (`MediaContent`/`StickerContent`/`LocationContent` in `app/domain/message.py`)
+  but `send_text` is the only outbound path wired up.
+
+## Acknowledgments
+
+Original code by [@feel90d](https://github.com/feel90d) and
+[@lukyan0v_a](https://github.com/lukyan0v_a). This fork drops the WhatsApp
+(Wasender) and VK adapters, refactors for multi-account Telegram, and adds
+Docker packaging.
 
 ## License
 
-MIT (or your preferred license)
+MIT (see upstream).

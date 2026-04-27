@@ -1,21 +1,22 @@
 [project]
-name = "chatwoot-integrations"
-version = "0.1.0"
-description = ""
+name = "chatwoot-telegram-bridge"
+version = "1.0.0"
+description = "Bridge personal Telegram accounts (multi-account, non-bot) to Chatwoot via Telethon."
 authors = [
-    {name = "@feel90d",email = "feel90d@gmail.com"},
-    {name = "@lukyan0v_a",email = "forjob34@gmail.com"},
+    {name = "nouralddin-abdullah"},
 ]
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi[standard-no-fastapi-cloud-cli] (>=0.116.1,<0.117.0)",
+    "uvicorn[standard] (>=0.30.0,<0.40.0)",
     "httpx (>=0.28.1,<0.29.0)",
     "pyee (>=13.0.0,<14.0.0)",
     "python-dotenv (>=1.1.1,<2.0.0)",
     "telethon (>=1.40.0,<2.0.0)",
     "cryptg (>=0.5.1,<0.6.0)",
-    "pillow (>=11.3.0,<12.0.0)"
+    "pillow (>=11.3.0,<12.0.0)",
+    "pydantic (>=2.9.0,<3.0.0)",
 ]
 
 
@@ -36,4 +37,3 @@ flake8 = "^7.3.0"
 [tool.poetry.scripts]
 lint = "scripts.lint:main"
 gen-webhook-id = "scripts.gen_webhook_id:main"
-

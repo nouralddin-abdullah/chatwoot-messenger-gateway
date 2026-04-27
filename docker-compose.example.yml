@@ -1,0 +1,25 @@
+# Example compose snippet — paste into your existing /opt/chatwoot/docker-compose.yml
+# under the `services:` block, alongside hydroxide/stunnel/evolution-api.
+#
+# Caddy reverse-proxies https://chat.nouralddin.wtf to chatwoot-rails. Telegram
+# webhooks come from Chatwoot itself (server-side), so this service only needs
+# to be reachable on the internal app-net network — no public port required.
+#
+# If you want to receive webhooks from outside the docker network (e.g. from
+# Chatwoot Cloud, or for testing with the public URL), add a Caddy route:
+#   tg.nouralddin.wtf { reverse_proxy telegram-bridge:8000; encode gzip zstd }
+
+  telegram-bridge:
+    build: ./chatwoot-messenger-gateway
+    restart: unless-stopped
+    env_file: .env                         # reuses the main stack .env
+    environment:
+      TG_SESSIONS_DIR: /app/sessions
+    volumes:
+      - telegram_sessions:/app/sessions
+    expose:
+      - "8000"
+    networks: [app-net]
+
+# Add to the `volumes:` section at the bottom of compose:
+#   telegram_sessions:

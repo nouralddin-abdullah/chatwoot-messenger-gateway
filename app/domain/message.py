@@ -1,9 +1,10 @@
-from typing import Annotated, Any, Dict, Literal, Union
+from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
 
-# Content payloads (discriminated union)
+# Content payloads (discriminated union). Only TextContent is used today;
+# the others stay defined so future media support is a drop-in.
 class TextContent(BaseModel):
     type: Literal["text"]
     text: str
@@ -49,11 +50,10 @@ Content = Annotated[
 ]
 
 
-# Unified message
 class UnifiedMessage(BaseModel):
     model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
 
-    channel: Literal["whatsapp", "telegram", "vk"]
+    channel: Literal["telegram"] = "telegram"
     recipient_id: str
     sender_id: str | None = None
     sender_name: str | None = None

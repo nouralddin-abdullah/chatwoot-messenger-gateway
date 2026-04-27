@@ -21,26 +21,21 @@ class ChatwootService:
         phone: Optional[str],
         email: Optional[str],
         custom_attributes: Dict[str, Any],
-        additional_attributes: Optional[Dict[str, Any]] = None,  # NEW
+        additional_attributes: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Upsert contact and return {'id', 'source_id'}.
         Strategy:
-        - If custom_attributes contain platform user ids (vk_user_id/telegram_user_id), FIRST try /contacts/filter.
-        - Else try /contacts/search with search_key (e.g., phone for WhatsApp).
-        - If found -> update attributes (best effort).
-        - If not found -> create with inbox_id + attributes.
+          1) If custom_attributes contains telegram_user_id, look up via /contacts/filter
+             so we match on the platform id even when the contact has no name yet.
+          2) Otherwise fall back to /contacts/search with the search_key.
+          3) If found -> update attributes (best effort).
+          4) If not found -> create with inbox_id + attributes.
         """
         contacts = []
 
-        vk_user_id = (custom_attributes or {}).get("vk_user_id")
-        vk_identifier = f"vk:{vk_user_id}" if vk_user_id else None
-
-        # 1) Attribute-based lookup
         attr_lookup_keys = [
-            k
-            for k in ("vk_user_id", "telegram_user_id")
-            if k in (custom_attributes or {})
+            k for k in ("telegram_user_id",) if k in (custom_attributes or {})
         ]
         if attr_lookup_keys:
             try:
@@ -51,7 +46,6 @@ class ChatwootService:
             except Exception as e:
                 logger.warning("[chatwoot] filter_contacts failed: %s", e)
 
-        # 2) Fallback search
         if not contacts:
             try:
                 res = await self._client.search_contacts(q=search_key)
@@ -59,30 +53,22 @@ class ChatwootService:
             except Exception as e:
                 logger.warning("[chatwoot] search_contacts failed: %s", e)
 
-        # 3) Update or create
         if contacts:
             contact = contacts[0]
             contact_id = int(contact.get("id"))
-            # Update attributes only if provided
             if custom_attributes or additional_attributes is not None:
                 try:
                     await self._client.update_contact(
                         contact_id=contact_id,
-                        name=None,
-                        phone_number=None,
-                        email=None,
-                        identifier=vk_identifier,
                         custom_attributes=custom_attributes,
-                        additional_attributes=additional_attributes,  # NEW
+                        additional_attributes=additional_attributes,
                     )
                 except Exception as e:
                     logger.warning("[chatwoot] update_contact skipped: %s", e)
-            # Optionally set name if empty
             if name and not (contact.get("name") or "").strip():
                 try:
                     await self._client.update_contact(
-                        contact_id=contact_id,
-                        name=name,
+                        contact_id=contact_id, name=name
                     )
                 except Exception as e:
                     logger.warning("[chatwoot] update name skipped: %s", e)
@@ -92,16 +78,14 @@ class ChatwootService:
                 name=name or search_key,
                 phone_number=phone,
                 email=email,
-                identifier=vk_identifier,
                 custom_attributes=custom_attributes or {},
-                additional_attributes=additional_attributes,  # NEW
+                additional_attributes=additional_attributes,
             )
             payload = (created or {}).get("payload") or {}
             contact = payload.get("contact") or created.get("contact") or {}
             if not contact and "id" in (created or {}):
                 contact = created
 
-        # 4) Extract source_id
         source_id = self._extract_source_id_for_inbox(contact, inbox_id) or search_key
         logger.info(
             "[chatwoot] ensure_contact ok id=%s inbox=%s source_id=%r",

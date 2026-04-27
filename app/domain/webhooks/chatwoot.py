@@ -4,7 +4,7 @@ from pydantic import BaseModel
 
 
 class ChatwootConversationMeta(BaseModel):
-    channel: Optional[str] = None  # "whatsapp" | "telegram" | "vk"
+    channel: Optional[str] = None  # "telegram" (single channel in this fork)
     recipient_id: Optional[str] = None  # unified recipient id
 
 

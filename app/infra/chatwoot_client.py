@@ -37,7 +37,7 @@ class ChatwootClient:
     async def filter_contacts(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
         """
         Filter contacts by attributes supported by /contacts/filter.
-        attribute_key MUST be the raw key (e.g., "vk_user_id"), not "custom_attribute_*".
+        attribute_key MUST be the raw key (e.g., "telegram_user_id"), not "custom_attribute_*".
         """
         url = f"{self._account_base}/contacts/filter"
         filters: List[Dict[str, Any]] = []
